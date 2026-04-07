@@ -22,7 +22,16 @@ class LogParser:
 
     LEVEL_PATTERN = re.compile(r"\[?(INFO|ERROR|WARN|DEBUG|TRACE|FATAL)\]?")
 
-    def parse_timestamp(self, line: str) -> tuple[Optional[datetime], str]:
+    def load(self, path: str) -> list[LogEntry]:
+        entries = []
+        with open(path) as f:
+            for line in f:
+                entry = self._parse_line(line.rstrip("\n"))
+                if entry is not None:
+                    entries.append(entry)
+        return entries
+
+    def _parse_timestamp(self, line: str) -> tuple[Optional[datetime], str]:
         for pattern, fmt in self.TIMESTAMP_PATTERNS:
             match = re.search(pattern, line)
             if match:
@@ -31,7 +40,7 @@ class LogParser:
                 return ts, remaining
         return None, line
 
-    def parse_level(self, line: str) -> tuple[Optional[str], str]:
+    def _parse_level(self, line: str) -> tuple[Optional[str], str]:
         match = self.LEVEL_PATTERN.search(line)
         if match:
             level = match.group().strip("[]")
@@ -39,7 +48,7 @@ class LogParser:
             return level, remaining
         return None, line
 
-    def parse_nested(self, value: str) -> dict:
+    def _parse_nested(self, value: str) -> dict:
         result = {}
         inner = value.strip("{}")
         parts = []
@@ -77,7 +86,7 @@ class LogParser:
                             result[k] = v
         return result
 
-    def parse_fields(self, line: str) -> dict:
+    def _parse_fields(self, line: str) -> dict:
         fields = {}
         i = 0
         line = line.strip()
@@ -110,7 +119,7 @@ class LogParser:
                     elif line[i] == "}":
                         brace_count -= 1
                     i += 1
-                fields[key] = self.parse_nested(line[start:i])
+                fields[key] = self._parse_nested(line[start:i])
             elif i < len(line) and line[i] == '"':
                 i += 1
                 start = i
@@ -144,7 +153,7 @@ class LogParser:
 
         return fields
 
-    def is_noise_line(self, line: str) -> bool:
+    def _is_noise_line(self, line: str) -> bool:
         stripped = line.strip()
         if not stripped:
             return True
@@ -152,17 +161,17 @@ class LogParser:
             return True
         return False
 
-    def parse_line(self, line: str) -> Optional[LogEntry]:
-        if self.is_noise_line(line):
+    def _parse_line(self, line: str) -> Optional[LogEntry]:
+        if self._is_noise_line(line):
             return None
 
-        timestamp, remaining = self.parse_timestamp(line)
-        level, remaining = self.parse_level(remaining)
+        timestamp, remaining = self._parse_timestamp(line)
+        level, remaining = self._parse_level(remaining)
 
         if timestamp is None and level is None:
             return None
 
-        fields = self.parse_fields(remaining)
+        fields = self._parse_fields(remaining)
 
         return LogEntry(
             timestamp=timestamp,
@@ -171,66 +180,3 @@ class LogParser:
             raw=line,
         )
 
-    def parse_file(self, path: str) -> list[LogEntry]:
-        entries = []
-        with open(path) as f:
-            for line in f:
-                entry = self.parse_line(line.rstrip("\n"))
-                if entry is not None:
-                    entries.append(entry)
-        return entries
-
-    def compute_error_rate_by_service(self, entries: list[LogEntry]) -> dict[str, float]:
-        service_totals: dict[str, int] = {}
-        service_errors: dict[str, int] = {}
-
-        for entry in entries:
-            service = entry.fields.get("service")
-            if service is None:
-                continue
-            service_totals[service] = service_totals.get(service, 0) + 1
-            if entry.level == "ERROR":
-                service_errors[service] = service_errors.get(service, 0) + 1
-
-        return {
-            svc: service_errors.get(svc, 0) / total
-            for svc, total in service_totals.items()
-        }
-
-    def compute_duration_percentiles(
-        self, entries: list[LogEntry], percentiles: list[float] = None
-    ) -> dict[str, float]:
-        if percentiles is None:
-            percentiles = [50, 95, 99]
-
-        durations = []
-        for entry in entries:
-            d = entry.fields.get("duration_ms")
-            if d is not None and isinstance(d, (int, float)):
-                durations.append(float(d))
-
-        if not durations:
-            return {}
-
-        durations.sort()
-        n = len(durations)
-        result = {}
-        for p in percentiles:
-            idx = int(n * p / 100)
-            if idx >= n:
-                idx = n - 1
-            result[f"p{int(p)}"] = durations[idx]
-
-        return result
-
-    def top_users_by_request_count(
-        self, entries: list[LogEntry], n: int = 10
-    ) -> list[tuple[str, int]]:
-        counts: dict[str, int] = {}
-        for entry in entries:
-            user_id = entry.fields.get("user_id")
-            if user_id is not None and user_id != "":
-                counts[str(user_id)] = counts.get(str(user_id), 0) + 1
-
-        sorted_users = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-        return sorted_users[:n]

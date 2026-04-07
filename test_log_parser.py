@@ -244,3 +244,47 @@ def test_raw_line_preserved(parser, create_log_file):
     path = create_log_file(line)
     entries = parser.load(path)
     assert entries[0].raw == line
+
+
+# --- Edge cases ---
+
+
+def test_load_nonexistent_file(parser):
+    with pytest.raises(FileNotFoundError):
+        parser.load("/nonexistent/path/to/file.log")
+
+
+def test_level_only_no_timestamp(parser, create_log_file):
+    path = create_log_file("[INFO] service=auth action=login")
+    entries = parser.load(path)
+    assert len(entries) == 1
+    assert entries[0].level == "INFO"
+    assert entries[0].timestamp is None
+    assert entries[0].fields["service"] == "auth"
+
+
+def test_level_only_no_fields(parser, create_log_file):
+    path = create_log_file("2024-01-15T10:23:45Z [INFO]")
+    entries = parser.load(path)
+    assert len(entries) == 1
+    assert entries[0].level == "INFO"
+    assert entries[0].fields == {}
+
+
+def test_nested_field_with_comma_in_quoted_value(parser, create_log_file):
+    path = create_log_file(
+        '2024-01-15T10:23:45Z [INFO] ctx={msg="hello, world",count=1}'
+    )
+    entries = parser.load(path)
+    ctx = entries[0].fields["ctx"]
+    assert ctx["msg"] == "hello, world"
+    assert ctx["count"] == 1
+
+
+def test_fields_with_spaces_in_key_skipped(parser, create_log_file):
+    path = create_log_file(
+        "2024-01-15T10:23:45Z [INFO] some garbage key=value"
+    )
+    entries = parser.load(path)
+    assert entries[0].fields["key"] == "value"
+    assert "some garbage" not in entries[0].fields

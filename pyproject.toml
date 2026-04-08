@@ -1,3 +1,7 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
 [project]
 name = "python-to-rust"
 version = "0.1.0"
@@ -9,4 +13,8 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "maturin>=1.0,<2.0",
 ]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

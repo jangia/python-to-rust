@@ -180,10 +180,18 @@ fn parse_nested<'py>(py: Python<'py>, value: &str) -> PyResult<Bound<'py, PyDict
     Ok(dict)
 }
 
+fn find_char(chars: &[char], start: usize, target: char) -> Option<usize> {
+    for (offset, &ch) in chars[start..].iter().enumerate() {
+        if ch == target {
+            return Some(start + offset);
+        }
+    }
+    None
+}
+
 fn parse_fields<'py>(py: Python<'py>, line: &str) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
-    let line = line.trim();
-    let chars: Vec<char> = line.chars().collect();
+    let chars: Vec<char> = line.trim().chars().collect();
     let len = chars.len();
     let mut i = 0;
 
@@ -193,19 +201,18 @@ fn parse_fields<'py>(py: Python<'py>, line: &str) -> PyResult<Bound<'py, PyDict>
             continue;
         }
 
-        let eq_pos = match line[i..].find('=') {
-            Some(pos) => i + pos,
+        let eq_pos = match find_char(&chars, i, '=') {
+            Some(pos) => pos,
             None => break,
         };
 
         let key: String = chars[i..eq_pos].iter().collect();
-        let key = key.trim();
+        let key = key.trim().to_string();
 
         if key.contains(' ') {
-            let space_pos = line[i..].find(' ');
-            match space_pos {
+            match find_char(&chars, i, ' ') {
                 Some(pos) => {
-                    i = i + pos + 1;
+                    i = pos + 1;
                     continue;
                 }
                 None => break,
@@ -228,7 +235,7 @@ fn parse_fields<'py>(py: Python<'py>, line: &str) -> PyResult<Bound<'py, PyDict>
             }
             let nested_str: String = chars[start..i].iter().collect();
             let nested_val = parse_nested(py, &nested_str)?;
-            dict.set_item(key, nested_val)?;
+            dict.set_item(&key, nested_val)?;
         } else if i < len && chars[i] == '"' {
             i += 1;
             let start = i;
@@ -240,7 +247,7 @@ fn parse_fields<'py>(py: Python<'py>, line: &str) -> PyResult<Bound<'py, PyDict>
                 }
             }
             let value: String = chars[start..i].iter().collect();
-            dict.set_item(key, value)?;
+            dict.set_item(&key, value)?;
             if i < len {
                 i += 1;
             }
@@ -251,9 +258,9 @@ fn parse_fields<'py>(py: Python<'py>, line: &str) -> PyResult<Bound<'py, PyDict>
             }
             let value: String = chars[start..i].iter().collect();
             if value.is_empty() {
-                dict.set_item(key, py.None())?;
+                dict.set_item(&key, py.None())?;
             } else {
-                set_coerced_value(&dict, key, &value)?;
+                set_coerced_value(&dict, &key, &value)?;
             }
         }
     }

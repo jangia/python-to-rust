@@ -3,9 +3,116 @@ import tempfile
 from datetime import datetime
 
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from log_parser import LogParser
 from rust_log_parser import RustLogParser
+
+
+# --- Hypothesis strategies ---
+
+LEVELS = ["INFO", "ERROR", "WARN", "DEBUG", "TRACE", "FATAL"]
+
+st_timestamp = st.one_of(
+    st.builds(
+        lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond:06d}Z",
+        st.datetimes(
+            min_value=datetime(1970, 1, 1),
+            max_value=datetime(2099, 12, 31),
+        ),
+    ),
+    st.builds(
+        lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        st.datetimes(
+            min_value=datetime(1970, 1, 1),
+            max_value=datetime(2099, 12, 31),
+        ),
+    ),
+    st.builds(
+        lambda dt: dt.strftime("%Y-%m-%d %H:%M:%S"),
+        st.datetimes(
+            min_value=datetime(1970, 1, 1),
+            max_value=datetime(2099, 12, 31),
+        ),
+    ),
+    st.builds(
+        lambda dt: dt.strftime("%Y/%m/%d %H:%M:%S"),
+        st.datetimes(
+            min_value=datetime(1970, 1, 1),
+            max_value=datetime(2099, 12, 31),
+        ),
+    ),
+)
+
+st_level = st.one_of(
+    st.builds(lambda l: f"[{l}]", st.sampled_from(LEVELS)),
+    st.sampled_from(LEVELS),
+)
+
+st_field_key = st.from_regex(r"[a-z][a-z0-9_]{0,15}", fullmatch=True)
+
+st_field_value = st.one_of(
+    st.integers(min_value=-999999, max_value=999999).map(str),
+    st.floats(
+        min_value=-1e6,
+        max_value=1e6,
+        allow_nan=False,
+        allow_infinity=False,
+    ).filter(lambda f: f != int(f)).map(lambda f: f"{f:.2f}"),
+    st.sampled_from(["true", "false"]),
+    st.text(
+        alphabet=st.characters(
+            whitelist_categories=("L", "N", "P"),
+            blacklist_characters='"\\= \t\n{}',
+        ),
+        min_size=1,
+        max_size=20,
+    ),
+    st.text(
+        alphabet=st.characters(
+            whitelist_categories=("L", "N", "P", "Z"),
+            blacklist_characters='"\\\n',
+        ),
+        min_size=1,
+        max_size=30,
+    ).map(lambda s: f'"{s}"'),
+)
+
+st_field = st.builds(lambda k, v: f"{k}={v}", st_field_key, st_field_value)
+
+st_fields = st.lists(st_field, min_size=0, max_size=5).map(lambda fs: " ".join(fs))
+
+st_log_line = st.builds(
+    lambda ts, level, fields: f"{ts} {level} {fields}".rstrip(),
+    st_timestamp,
+    st_level,
+    st_fields,
+)
+
+st_noise_line = st.one_of(
+    st.just(""),
+    st.just("   "),
+    st.text(
+        alphabet=st.characters(blacklist_characters="\n", blacklist_categories=("Cs",)),
+        min_size=1,
+        max_size=30,
+    ).map(lambda s: f"-- {s} --"),
+)
+
+st_any_line = st.one_of(
+    st_log_line,
+    st_noise_line,
+    st.text(
+        alphabet=st.characters(
+            whitelist_categories=("L",),
+            blacklist_categories=("Cs",),
+        ),
+        min_size=1,
+        max_size=20,
+    ),
+)
+
+st_log_file = st.lists(st_any_line, min_size=1, max_size=15)
 
 
 @pytest.fixture
@@ -271,3 +378,57 @@ class TestLogParserRust(LogParserContract):
     @pytest.fixture
     def parser(self):
         return RustLogParser()
+
+
+def _entries_equal(a, b) -> bool:
+    if len(a) != len(b):
+        return False
+    for ea, eb in zip(a, b):
+        if ea.timestamp != eb.timestamp:
+            return False
+        if ea.level != eb.level:
+            return False
+        if ea.raw != eb.raw:
+            return False
+        if dict(ea.fields) != dict(eb.fields):
+            return False
+    return True
+
+
+def _write_log_file(lines):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+        for line in lines:
+            f.write(line + "\n")
+        return f.name
+
+
+class TestImplementationsAgree:
+    @given(lines=st_log_file)
+    @settings(max_examples=500)
+    def test_both_implementations_agree(self, lines):
+        path = _write_log_file(lines)
+        try:
+            py_entries = LogParser().load(path)
+            rs_entries = RustLogParser().load(path)
+            assert _entries_equal(py_entries, rs_entries), (
+                f"Mismatch for input:\n{lines}\n"
+                f"Python: {[(e.timestamp, e.level, e.fields) for e in py_entries]}\n"
+                f"Rust:   {[(e.timestamp, e.level, e.fields) for e in rs_entries]}"
+            )
+        finally:
+            os.unlink(path)
+
+    @given(line=st_log_line)
+    @settings(max_examples=500)
+    def test_valid_log_lines_agree(self, line):
+        path = _write_log_file([line])
+        try:
+            py_entries = LogParser().load(path)
+            rs_entries = RustLogParser().load(path)
+            assert _entries_equal(py_entries, rs_entries), (
+                f"Mismatch for line: {line!r}\n"
+                f"Python: {[(e.timestamp, e.level, e.fields) for e in py_entries]}\n"
+                f"Rust:   {[(e.timestamp, e.level, e.fields) for e in rs_entries]}"
+            )
+        finally:
+            os.unlink(path)

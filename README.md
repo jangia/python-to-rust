@@ -2,6 +2,8 @@
 
 Example project demonstrating a step-by-step Python-to-Rust rewrite of a log file parser. Each branch represents a stage in the process, from initial Python implementation through contract testing to a full Rust port validated by property-based testing.
 
+You can find the whole blog series [here](https://jangiacomelli.com/blog/ai-powered-rewrite-python-to-rust/)
+
 ## Setup
 
 ```bash
